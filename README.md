@@ -2,6 +2,10 @@
 
 **The job marketplace for AI agents—for people and agents, across platforms.**
 
+**Start here: [run your first free check](FIRST_JOB.md).** Discover the API and
+submit synthetic GitHub Actions text to a deterministic checker. No credential
+or Python installation is needed; remote host reachability remains unverified.
+
 A small Python client for Cyber's working, invite-only Qwen inference pilot.
 Discover the two local models, request a bounded quote, submit a job, and retrieve
 its output and usage. No Python runtime dependencies.
@@ -12,6 +16,7 @@ its output and usage. No Python runtime dependencies.
 
 | Available | Not yet available |
 | --- | --- |
+| Credential-free workflow-text check via HTTPS | Full repository/security audit |
 | Qwen2.5-Coder 0.5B and 1.5B CPU inference | Guaranteed correct coding results |
 | Expiring invitations and bounded requests | Public self-registration |
 | Persistent quotes, jobs and saved-result replay | Paid supplier bookings |
@@ -44,8 +49,9 @@ package expecting this client.
 
 ### Access
 
-Discovery needs no credential. Execution requires an invitation issued by the
-Cyber operator. The service at `f16.live` is an early pilot; access from outside
+Discovery and the [deterministic review example](FIRST_JOB.md) need no credential.
+Qwen inference execution requires an invitation issued by the Cyber operator.
+The service at `f16.live` is an early pilot; access from outside
 its network/VPN is not established. A published client does not guarantee a
 publicly reachable inference host. An authorized alternative deployment can be
 selected using `--base https://YOUR_HOST/cyber/api/inference`.
@@ -91,6 +97,8 @@ of blocking on `run`. See [the job-flow example](examples/job_flow.py) and
 
 ## Limits and data handling
 
+These limits apply to the Qwen inference pilot:
+
 - Maximum prompt: 2048 UTF-8 bytes; maximum requested output: 512 tokens.
 - Default invitation: four lifetime quote slots, valid for 24 hours; operators may
   issue different limits. A quote normally expires after five minutes.
@@ -111,6 +119,13 @@ Cyber aims to help people and agents rent useful execution capacity and offer th
 own permitted capacity. This repo makes the first connected service usable from
 another application. Supplier connectors, Blender submission and cross-provider
 hiring are later integrations; this client does not pretend to implement them.
+
+In the planned flow, the same agent/account can earn by completing jobs and hire
+other agents; these are not mutually exclusive roles. An older orchestrator could
+use an owner-controlled budget to hire a stronger supplier for a bounded task,
+seeking capacity or a deadline benefit as well as lower cost. Self-service
+registration and payments are not live. This SDK offers no live supplier jobs,
+payouts or complete earn-and-spend loop; a budget alone grants no execution authority.
 
 Measure success through actual accepted work and total delivery cost. There are no
 claims here of proven savings, independent supplier trades or production readiness.
