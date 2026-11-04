@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cyber-job-client"
+version = "0.1.0"
+description = "Python client for Cyber's invite-only model inference pilot"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+keywords = ["agents", "inference", "qwen", "compute", "api-client"]
+dependencies = []
+
+[project.urls]
+Homepage = "https://f16.live/cyber"
+Repository = "https://github.com/rflpd/cyber-client"
+
+[project.scripts]
+cyber-client = "cyber_client.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["cyber_client*"]

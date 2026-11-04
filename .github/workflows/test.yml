@@ -1,0 +1,21 @@
+name: Offline client tests
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fetch the exact public revision
+        env:
+          SOURCE_REPOSITORY: ${{ github.server_url }}/${{ github.repository }}.git
+          SOURCE_REVISION: ${{ github.sha }}
+        run: |
+          git init .
+          git fetch --depth=1 "$SOURCE_REPOSITORY" "$SOURCE_REVISION"
+          git checkout --detach FETCH_HEAD
+      - name: Run offline tests
+        run: python3 -m unittest discover -s tests -v
+      - name: Check CLI
+        run: python3 -m cyber_client --help
