@@ -27,6 +27,15 @@ by this client. The models did not pass all cases in our coding benchmark; retur
 text is **not independently accepted work**. BTC, ETH and stablecoin settlement
 are planned. Crypto mining is outside the product scope.
 
+## Experimental house-model integration
+
+A separate [house client](HOUSE_API.md) provides explicit quote, execute and
+status and cancellation operations plus restart recovery without execution authority. It is tested with synthetic
+HTTP fixtures; no house endpoint or qualified newer model is advertised yet.
+The existing pilot and CLI below remain unchanged.
+Its private status summary gives human dashboards and agents the same checked
+job state, while distinguishing a lost response from a completed delivery.
+
 ## Quickstart
 
 Requires Python 3.10 or newer. The client runs directly from a clone:
