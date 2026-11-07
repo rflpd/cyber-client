@@ -92,6 +92,11 @@ class HouseJob:
         self._request_bytes = _encode(request)
         self._quote_bytes = _encode(quote)
         self._state = quote['state']
+        self._observation_lock = threading.RLock()
+        self._observation = 'validated_quote'
+        self._restored = False
+        self._execution_attempted = False
+        self._output_sha256 = None
 
     @property
     def request(self):
@@ -218,6 +223,8 @@ class HouseClient:
         except (contract.HouseClientMismatch, ValueError, TypeError, KeyError, UnicodeError, RecursionError):
             raise CyberError('house_response_binding_mismatch') from None
         job = HouseJob(self, saved, quote)
+        job._observation = 'restored_records'
+        job._restored = True
         with self._submission_lock:
             self._submitted.add(job.quote_id)
         return job
@@ -228,6 +235,16 @@ class HouseClient:
         return job.quote_id
 
     def _observe(self, job, response):
+        with job._observation_lock:
+            record = self._observe_locked(job, response)
+            if 'output_sha256' in record:
+                if job._output_sha256 is not None and job._output_sha256 != record['output_sha256']:
+                    raise CyberError('house_response_binding_mismatch')
+                job._output_sha256 = record['output_sha256']
+            job._observation = 'validated_response'
+            return record
+
+    def _observe_locked(self, job, response):
         try:
             record = response.get('record', {})
             if 'output' in record:
@@ -253,14 +270,51 @@ class HouseClient:
     def execute(self, job):
         """One submission per quote per client lifetime; persist caller intent first."""
         qid = self._job(job)
-        with self._submission_lock:
+        with self._submission_lock, job._observation_lock:
             if qid in self._submitted or job._state != 'quoted':
                 raise CyberError('house_review_required')
             # Consumed locally before transport, including lost acknowledgement.
             self._submitted.add(qid)
-        return self._observe(job, self._call('execute', {'quote_id': qid}))
+            job._execution_attempted = True
+        return self._job_call(job, 'execute', qid)
 
     def status(self, job):
         """One read of existing state. Never creates or executes replacement work."""
         qid = self._job(job)
-        return self._observe(job, self._call('status', {'quote_id': qid}))
+        return self._job_call(job, 'status', qid)
+
+    def _job_call(self, job, operation, qid):
+        # Mark uncertainty before dispatch so interrupts and unexpected exits
+        # cannot leave an earlier observation looking current. Re-raise all
+        # failures naturally; only a fully validated response replaces this.
+        with job._observation_lock:
+            job._observation = ('execution_outcome_unknown' if operation == 'execute'
+                                else 'status_unavailable')
+        return self._observe(job, self._call(operation, {'quote_id': qid}))
+
+    def summary(self, job):
+        """One private status view for human/agent callers; no HTTP or new authority.
+
+        The last valid server state is explicitly distinct from a failed read,
+        restored records and the receipt of a complete, still-unaccepted answer.
+        This projection omits the token, prompt and model output.
+        """
+        qid = self._job(job)
+        with job._observation_lock:
+            quote = job.quote
+            return {
+                'schema': 'cyber-house-client-status/1',
+                'quote_id': qid, 'profile_id': quote['model'],
+                'profile_sha256': quote['profile_sha256'],
+                'task_contract_sha256': quote['task_contract_sha256'],
+                'resource_contract_sha256': quote['resource_contract_sha256'],
+                'last_validated_state': job._state,
+                'observation': job._observation,
+                'restored_for_status_only': job._restored,
+                'execution_attempted_in_this_client': job._execution_attempted,
+                'validated_output_received': job._output_sha256 is not None,
+                'received_output_sha256': job._output_sha256,
+                'semantic_acceptance': False, 'independent_model_attestation': False,
+                'charged_microusd': 0, 'full_cost_known': False,
+                'settlement': 'disabled', 'new_execution_authorized': False,
+            }

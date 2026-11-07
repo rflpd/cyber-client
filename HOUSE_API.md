@@ -86,6 +86,39 @@ The SDK does not grant retention/deletion guarantees, publishing permission,
 payments, model access or an execution budget. Use synthetic data until the
 operator has established the deployed service's data-handling contract.
 
+## One status view for people and agents
+
+`client.summary(job)` returns a JSON-ready projection of the same validated server
+records used by quote, execute and status. It makes no HTTP call. A human dashboard
+and an agent can consume this object without inventing a separate job state:
+
+```python
+import json
+
+# After a successful operation, or in the caller's fixed-error handler:
+print(json.dumps(client.summary(job), indent=2))
+```
+
+The projection includes exact profile/task/resource bindings, the last validated
+state, observation status, whether this client attempted execution and whether a
+validated complete output was received. It omits the token, prompt and answer
+text. Keep it private: quote IDs and hashes remain job metadata. A received output
+digest is preserved; a later different answer for that same job is rejected.
+
+| Situation | Observation | Meaning |
+| --- | --- | --- |
+| New quote received | `validated_quote` | A quote was checked; it is not execution permission |
+| Saved records restored | `restored_records` | Historical snapshot; read status to learn the server's current state |
+| Valid status/execute response | `validated_response` | Server bindings checked; no independent model attestation |
+| Execute request fails | `execution_outcome_unknown` | Work may have started; keep the job and use status/operator reconciliation |
+| Status request fails or is rejected | `status_unavailable` | Last known state is retained; freshness is unknown |
+
+Even a `completed` quote does not prove the caller received an output. A complete
+generation remains `semantic_acceptance: false`; full cost remains unknown and
+settlement disabled. The view grants no new execution or retry. It is a client
+projection for an eventual invited service, not a deployed browser dashboard,
+public discovery endpoint or proof of a qualified house model.
+
 ## Evidence
 
 The client suite passes 25 test methods using local HTTP fixtures, including
@@ -95,3 +128,10 @@ A separate integration check against the server's actual API adapter and a
 private temporary Store confirmed quote/status compatibility, all four profile
 bindings and refusal of disabled execution with zero attempts. No real model,
 paid provider, production ledger or remote endpoint ran in these checks.
+
+On 7 November, the complete client suite passed 31 test methods after the status
+projection was added. An additional actual server-adapter/temporary-Store HTTP
+check used both prepared Qwen3.5-9B and GLM profiles with the new 768-token remote
+scope. Quote/status hashes matched, saved jobs restored for status only, and
+execution remained disabled with zero canonical attempts. These are source and
+synthetic transport checks, not house-model generation or remote delivery.

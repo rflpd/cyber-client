@@ -86,19 +86,106 @@ class HouseTests(unittest.TestCase):
         self.assertEqual(saved['settlement'],'disabled')
         self.assertEqual([r[0] for r in self.requests],['/v1/house/quotes','/v1/house/execute','/v1/house/status'])
         self.assertTrue(all(r[1]=='Bearer '+TOKEN for r in self.requests))
+        summary = self.client.summary(job)
+        self.assertEqual(summary['last_validated_state'], 'completed')
+        self.assertTrue(summary['validated_output_received'])
+        self.assertFalse(summary['semantic_acceptance'])
+        self.assertFalse(summary['independent_model_attestation'])
+        self.assertEqual(summary['received_output_sha256'], hashlib.sha256(b'SYNTHETIC ANSWER').hexdigest())
     def test_lost_execute_acknowledgement_reconciles_without_retry(self):
         job=self.job();self.responses.append((None,None,{}))
         with self.assertRaisesRegex(CyberError,'outcome_unknown'):self.client.execute(job)
+        summary = self.client.summary(job)
+        self.assertEqual(summary['observation'], 'execution_outcome_unknown')
+        self.assertEqual(summary['last_validated_state'], 'quoted')
+        self.assertTrue(summary['execution_attempted_in_this_client'])
+        self.assertFalse(summary['new_execution_authorized'])
         with self.assertRaisesRegex(CyberError,'review_required'):self.client.execute(job)
         new=HouseClient(base_url=self.base,token_file=self.token)
         restored=new.restore(job.request,job.quote)
+        self.assertEqual(new.summary(restored)['observation'], 'restored_records')
+        self.assertTrue(new.summary(restored)['restored_for_status_only'])
         with self.assertRaisesRegex(CyberError,'review_required'):new.execute(restored)
         self.add(wrap(self.answer));self.assertEqual(new.status(restored)['state'],'completed')
+        self.assertEqual(new.summary(restored)['observation'], 'validated_response')
         self.assertEqual(sum(r[0].endswith('/execute') for r in self.requests),1)
     def test_restore_validates_and_makes_no_request(self):
         job=self.client.restore(self.body,self.q)
         self.assertEqual(job.quote_id,self.q['quote_id']);self.assertEqual(self.requests,[])
         with self.assertRaises(CyberError):self.client.restore(dict(self.body,prompt='changed'),self.q)
+
+    def test_summary_is_a_private_read_only_projection_without_content(self):
+        job = self.job()
+        before = len(self.requests)
+        summary = self.client.summary(job)
+        self.assertEqual(summary['profile_id'], self.q['model'])
+        self.assertEqual(summary['task_contract_sha256'], self.q['task_contract_sha256'])
+        self.assertEqual(summary['resource_contract_sha256'], self.q['resource_contract_sha256'])
+        self.assertEqual(summary['observation'], 'validated_quote')
+        self.assertFalse(summary['validated_output_received'])
+        self.assertIsNone(summary['received_output_sha256'])
+        text = json.dumps(summary)
+        for secret in (TOKEN, self.body['prompt'], self.answer['output']):
+            self.assertNotIn(secret, text)
+        summary['last_validated_state'] = 'completed'
+        self.assertEqual(self.client.summary(job)['last_validated_state'], 'quoted')
+        self.assertEqual(len(self.requests), before)
+        other = HouseClient(base_url=self.base, token_file=self.token)
+        with self.assertRaises(CyberError): other.summary(job)
+
+    def test_completed_quote_does_not_invent_received_output(self):
+        self.add(wrap(dict(self.q, state='completed')))
+        job = self.client.quote(self.body)
+        summary = self.client.summary(job)
+        self.assertEqual(summary['last_validated_state'], 'completed')
+        self.assertFalse(summary['validated_output_received'])
+        self.assertFalse(summary['semantic_acceptance'])
+
+    def test_failed_status_retains_prior_result_but_marks_observation_unavailable(self):
+        job = self.job()
+        self.add(wrap(self.answer)); self.client.execute(job)
+        self.add({'error': 'sensitive-server-error'}, status=401)
+        with self.assertRaises(CyberError): self.client.status(job)
+        summary = self.client.summary(job)
+        self.assertEqual(summary['observation'], 'status_unavailable')
+        self.assertEqual(summary['last_validated_state'], 'completed')
+        self.assertTrue(summary['validated_output_received'])
+        self.assertNotIn('sensitive-server-error', json.dumps(summary))
+
+    def test_changed_completed_output_does_not_replace_the_first_result_digest(self):
+        job = self.job()
+        self.add(wrap(self.answer)); self.client.execute(job)
+        original = self.client.summary(job)['received_output_sha256']
+        self.add(wrap(dict(self.answer, output='DIFFERENT ANSWER')))
+        with self.assertRaisesRegex(CyberError, 'binding_mismatch'): self.client.status(job)
+        summary = self.client.summary(job)
+        self.assertEqual(summary['received_output_sha256'], original)
+        self.assertEqual(summary['observation'], 'status_unavailable')
+
+    def test_execute_interrupt_or_unexpected_exit_keeps_unknown_and_consumed(self):
+        for error in (KeyboardInterrupt, SystemExit, RuntimeError):
+            with self.subTest(error=error.__name__):
+                client = HouseClient(base_url=self.base, token_file=self.token)
+                self.add(wrap(self.q)); job = client.quote(self.body)
+                with patch.object(client, '_call', side_effect=error('private-sentinel')):
+                    with self.assertRaises(error): client.execute(job)
+                summary = client.summary(job)
+                self.assertEqual(summary['observation'], 'execution_outcome_unknown')
+                self.assertTrue(summary['execution_attempted_in_this_client'])
+                self.assertNotIn('private-sentinel', json.dumps(summary))
+                with self.assertRaisesRegex(CyberError, 'review_required'): client.execute(job)
+
+    def test_status_interrupt_or_unexpected_exit_marks_old_observation_unavailable(self):
+        job = self.job()
+        self.add(wrap(self.answer)); self.client.execute(job)
+        for error in (KeyboardInterrupt, SystemExit, RuntimeError):
+            with self.subTest(error=error.__name__):
+                with patch.object(self.client, '_call', side_effect=error('private-sentinel')):
+                    with self.assertRaises(error): self.client.status(job)
+                summary = self.client.summary(job)
+                self.assertEqual(summary['observation'], 'status_unavailable')
+                self.assertEqual(summary['last_validated_state'], 'completed')
+                self.assertTrue(summary['validated_output_received'])
     def test_request_and_quote_snapshots(self):
         job=self.job();self.body['prompt']='changed';job.request['prompt']='changed';job.quote['quote_id']='e'*32
         self.assertEqual(job.request['prompt'],'Synthetic test only');self.assertEqual(job.quote_id,'c'*32)
