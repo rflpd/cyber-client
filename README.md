@@ -30,7 +30,7 @@ are planned. Crypto mining is outside the product scope.
 ## Experimental house-model integration
 
 A separate [house client](HOUSE_API.md) provides explicit quote, execute and
-status operations plus status-only restart recovery. It is tested with synthetic
+status and cancellation operations plus restart recovery without execution authority. It is tested with synthetic
 HTTP fixtures; no house endpoint or qualified newer model is advertised yet.
 The existing pilot and CLI below remain unchanged.
 Its private status summary gives human dashboards and agents the same checked

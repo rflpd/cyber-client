@@ -42,6 +42,39 @@ def _decode(raw):
     return json.loads(raw, object_pairs_hook=unique, parse_constant=reject)
 
 
+def _validate_cancellation(quote, response):
+    """A scoped stop acknowledgement never proves worker teardown or acceptance."""
+    try:
+        record = contract._envelope(response)
+        fields = {'schema', 'quote_id', 'request_sha256', 'requested', 'state_at_request',
+                  'requested_at', 'last_observed_state', 'execution_prevented',
+                  'cleanup_verified', 'retry_authorized', 'charged_microusd',
+                  'settlement', 'semantic_acceptance'}
+        if (set(record) != fields or record['schema'] != 'cyber-house-cancellation/1'
+                or record['quote_id'] != quote['quote_id']
+                or record['request_sha256'] != quote['request_sha256']
+                or type(record['requested']) is not bool
+                or type(record['execution_prevented']) is not bool
+                or record['cleanup_verified'] is not False
+                or record['retry_authorized'] is not False):
+            raise contract.HouseClientMismatch()
+        contract._zero(record)
+        if record['requested']:
+            state = record['state_at_request']; current = record['last_observed_state']
+            if (type(record['requested_at']) is not int or record['requested_at'] <= 0
+                    or (state, current, record['execution_prevented']) not in {
+                        ('quoted', 'quoted', True), ('running', 'running', False),
+                        ('running', 'interrupted', False)}):
+                raise contract.HouseClientMismatch()
+        elif (record['state_at_request'] is not None or record['requested_at'] is not None
+                or record['last_observed_state'] not in ('completed', 'interrupted')
+                or record['execution_prevented']):
+            raise contract.HouseClientMismatch()
+        return copy.deepcopy(record)
+    except (contract.HouseClientMismatch, TypeError, ValueError, KeyError, AttributeError):
+        raise CyberError('house_response_binding_mismatch') from None
+
+
 def _endpoint(value):
     try:
         if (not isinstance(value, str) or len(value) > 2048
@@ -97,6 +130,8 @@ class HouseJob:
         self._restored = False
         self._execution_attempted = False
         self._output_sha256 = None
+        self._cancellation_observation = 'not_requested'
+        self._cancellation_receipt = None
 
     @property
     def request(self):
@@ -128,7 +163,7 @@ class HouseClient:
         self._submission_lock = threading.Lock()
 
     def _call(self, operation, body):
-        if operation not in ('quotes', 'execute', 'status'):
+        if operation not in ('quotes', 'execute', 'status', 'cancel'):
             raise CyberError('invalid_house_operation')
         try:
             payload = _encode(body)
@@ -211,7 +246,7 @@ class HouseClient:
         return HouseJob(self, saved, quote)
 
     def restore(self, request, saved_quote):
-        """Restore a saved job for status reads only; never re-authorize execution.
+        """Restore for status or an explicit stop request; never authorize execution.
 
         Persist request, quote and submission intent before execute. After an
         interruption restore those exact records and reconcile via status.
@@ -247,6 +282,16 @@ class HouseClient:
     def _observe_locked(self, job, response):
         try:
             record = response.get('record', {})
+            cancellation = job._cancellation_receipt
+            if cancellation is not None:
+                if cancellation['requested']:
+                    allowed = ({'quoted'} if cancellation['execution_prevented'] else
+                               {'interrupted'} if cancellation['last_observed_state'] == 'interrupted'
+                               else {'running', 'interrupted'})
+                else:
+                    allowed = {cancellation['last_observed_state']}
+                if record.get('state') not in allowed or ('output' in record and cancellation['requested']):
+                    raise contract.HouseClientMismatch()
             if 'output' in record:
                 validated = contract.validate_result(job.request, job.quote, response)
                 if job._state == 'interrupted':
@@ -283,6 +328,36 @@ class HouseClient:
         qid = self._job(job)
         return self._job_call(job, 'status', qid)
 
+    def cancel(self, job):
+        """Request stop once, including for restored jobs. Never imply cleanup.
+
+        Server-side cancellation is idempotent; this method makes no automatic
+        retry. Consume the local execution guard before transport, even when the
+        request is interrupted or its acknowledgement is lost.
+        """
+        qid = self._job(job)
+        with self._submission_lock, job._observation_lock:
+            self._submitted.add(qid)
+            job._cancellation_observation = 'outcome_unknown'
+        response = self._call('cancel', {'quote_id': qid})
+        receipt = _validate_cancellation(job.quote, response)
+        with job._observation_lock:
+            allowed = {'quoted': {'quoted', 'running', 'completed', 'interrupted'},
+                       'running': {'running', 'completed', 'interrupted'},
+                       'completed': {'completed'}, 'interrupted': {'interrupted'}}
+            if receipt['last_observed_state'] not in allowed[job._state]:
+                raise CyberError('house_response_binding_mismatch')
+            prior = job._cancellation_receipt
+            if prior is not None:
+                fixed = ('requested', 'state_at_request', 'requested_at', 'execution_prevented')
+                if (any(receipt[key] != prior[key] for key in fixed)
+                        or prior['last_observed_state'] in ('completed', 'interrupted')
+                        and receipt['last_observed_state'] != prior['last_observed_state']):
+                    raise CyberError('house_response_binding_mismatch')
+            job._cancellation_receipt = copy.deepcopy(receipt)
+            job._cancellation_observation = 'validated_acknowledgement'
+        return receipt
+
     def _job_call(self, job, operation, qid):
         # Mark uncertainty before dispatch so interrupts and unexpected exits
         # cannot leave an earlier observation looking current. Re-raise all
@@ -303,17 +378,23 @@ class HouseClient:
         with job._observation_lock:
             quote = job.quote
             return {
-                'schema': 'cyber-house-client-status/1',
+                'schema': 'cyber-house-client-status/2',
                 'quote_id': qid, 'profile_id': quote['model'],
                 'profile_sha256': quote['profile_sha256'],
                 'task_contract_sha256': quote['task_contract_sha256'],
                 'resource_contract_sha256': quote['resource_contract_sha256'],
                 'last_validated_state': job._state,
                 'observation': job._observation,
-                'restored_for_status_only': job._restored,
+                'restored_without_execution_authority': job._restored,
                 'execution_attempted_in_this_client': job._execution_attempted,
                 'validated_output_received': job._output_sha256 is not None,
                 'received_output_sha256': job._output_sha256,
+                'cancellation_observation': job._cancellation_observation,
+                'last_cancellation_requested': (job._cancellation_receipt['requested']
+                    if job._cancellation_receipt is not None else None),
+                'last_cancellation_state': (job._cancellation_receipt['last_observed_state']
+                    if job._cancellation_receipt is not None else None),
+                'cancellation_acknowledges_cleanup': False,
                 'semantic_acceptance': False, 'independent_model_attestation': False,
                 'charged_microusd': 0, 'full_cost_known': False,
                 'settlement': 'disabled', 'new_execution_authorized': False,

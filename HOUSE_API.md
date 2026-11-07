@@ -54,7 +54,8 @@ again. The client refuses a second execute for the same quote in its lifetime,
 including concurrent attempts. This is a convenience guard; durable duplicate
 prevention remains a server responsibility.
 
-After a process restart, restore your saved records for **status reads only**:
+After a process restart, restore your saved records for **status or an explicit
+stop request, never execution**:
 
 ```python
 client = HouseClient(base_url=approved_endpoint, token_file=private_token_file)
@@ -67,6 +68,32 @@ reconciliation; do not replace the request ID, construct a new client to resubmi
 or repeat the quote/execute sequence as a recovery shortcut. The SDK is not a
 durable job orchestrator and does not save your records for you. If the saved
 request/quote is missing, recover through the operator instead of guessing.
+
+## Requesting cancellation
+
+```python
+acknowledgement = client.cancel(job)  # one authenticated stop request
+record = client.status(job)           # separate read; no retry or new job
+```
+
+Cancellation uses the existing quote and works for restored jobs. The client
+blocks further execute submissions for that quote before sending the request,
+including if the request is interrupted or its acknowledgement is lost. It never
+automatically retries cancellation or creates replacement work. Repeating an
+explicit cancellation reads the same immutable server request; it does not create
+an execution claim or restore quota.
+
+The distinct `cyber-house-cancellation/1` acknowledgement binds the saved quote
+and request digest. `requested` reports persisted intent; `execution_prevented`
+can be true only for a request accepted before admission. It always carries
+`cleanup_verified: false` and no retry/payment/acceptance authority. A running
+worker may still be stopping. A job completed before cancellation retains its
+result. Keep the acknowledgement separately from the complete generation result
+and operator cleanup evidence. Accepted cancellation facts also constrain later
+status/results: a cancelled job cannot later become a completed generation, and
+terminal observations cannot regress. Contradictions are rejected before updating
+state or output receipt. Expired or revoked credentials cannot request
+cancellation; the server worker separately observes authority ending and stops.
 
 ## Transport and credentials
 
@@ -89,7 +116,7 @@ operator has established the deployed service's data-handling contract.
 ## One status view for people and agents
 
 `client.summary(job)` returns a JSON-ready projection of the same validated server
-records used by quote, execute and status. It makes no HTTP call. A human dashboard
+records used by quote, execute, status and cancellation. It makes no HTTP call. A human dashboard
 and an agent can consume this object without inventing a separate job state:
 
 ```python
@@ -104,6 +131,14 @@ state, observation status, whether this client attempted execution and whether a
 validated complete output was received. It omits the token, prompt and answer
 text. Keep it private: quote IDs and hashes remain job metadata. A received output
 digest is preserved; a later different answer for that same job is rejected.
+
+The projection is now `cyber-house-client-status/2`. It replaces the earlier draft
+`restored_for_status_only` field with `restored_without_execution_authority` and
+adds separate cancellation observations. A cancellation observation is either
+`not_requested`, `outcome_unknown` or `validated_acknowledgement`. The last received
+cancellation state/request flag remains a prior observation after an error; it
+never establishes worker cleanup or output receipt. This change belongs to the
+unmerged experimental client, not a released endpoint upgrade.
 
 | Situation | Observation | Meaning |
 | --- | --- | --- |
@@ -135,3 +170,9 @@ check used both prepared Qwen3.5-9B and GLM profiles with the new 768-token remo
 scope. Quote/status hashes matched, saved jobs restored for status only, and
 execution remained disabled with zero canonical attempts. These are source and
 synthetic transport checks, not house-model generation or remote delivery.
+
+The later cancellation extension passed 42 client test methods. Actual
+server-adapter checks with temporary Stores exercised both prepared profiles:
+restored stop requests were idempotent, both client and server refused subsequent
+execution, and each Store retained one quote, one cancellation and zero attempts.
+Server/thread cleanup passed. No model, remote delivery or paid provider ran.

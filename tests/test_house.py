@@ -45,6 +45,14 @@ def result(body, q):
 
 def wrap(record):return dict(api_schema=c.API_SCHEMA,record=record)
 
+def cancellation(q, state='quoted'):
+    requested=state in ('quoted','running')
+    return dict(schema='cyber-house-cancellation/1',quote_id=q['quote_id'],
+        request_sha256=q['request_sha256'],requested=requested,
+        state_at_request=state if requested else None,requested_at=1794040000 if requested else None,
+        last_observed_state=state,execution_prevented=state=='quoted',cleanup_verified=False,
+        retry_authorized=False,charged_microusd=0,settlement='disabled',semantic_acceptance=False)
+
 class HouseTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -104,7 +112,7 @@ class HouseTests(unittest.TestCase):
         new=HouseClient(base_url=self.base,token_file=self.token)
         restored=new.restore(job.request,job.quote)
         self.assertEqual(new.summary(restored)['observation'], 'restored_records')
-        self.assertTrue(new.summary(restored)['restored_for_status_only'])
+        self.assertTrue(new.summary(restored)['restored_without_execution_authority'])
         with self.assertRaisesRegex(CyberError,'review_required'):new.execute(restored)
         self.add(wrap(self.answer));self.assertEqual(new.status(restored)['state'],'completed')
         self.assertEqual(new.summary(restored)['observation'], 'validated_response')
@@ -113,6 +121,111 @@ class HouseTests(unittest.TestCase):
         job=self.client.restore(self.body,self.q)
         self.assertEqual(job.quote_id,self.q['quote_id']);self.assertEqual(self.requests,[])
         with self.assertRaises(CyberError):self.client.restore(dict(self.body,prompt='changed'),self.q)
+
+    def test_cancel_http_ack_is_distinct_from_execution_and_cleanup(self):
+        job=self.job();receipt=cancellation(self.q)
+        self.add(wrap(receipt));self.assertEqual(self.client.cancel(job),receipt)
+        self.assertEqual([r[0] for r in self.requests],['/v1/house/quotes','/v1/house/cancel'])
+        self.assertEqual(self.requests[-1][2],{'quote_id':self.q['quote_id']})
+        with self.assertRaisesRegex(CyberError,'review_required'):self.client.execute(job)
+        summary=self.client.summary(job)
+        self.assertEqual(summary['schema'],'cyber-house-client-status/2')
+        self.assertEqual(summary['cancellation_observation'],'validated_acknowledgement')
+        self.assertTrue(summary['last_cancellation_requested'])
+        self.assertFalse(summary['cancellation_acknowledges_cleanup'])
+        self.assertFalse(summary['execution_attempted_in_this_client'])
+        self.assertFalse(summary['semantic_acceptance'])
+
+    def test_restored_job_can_request_stop_but_cannot_execute(self):
+        job=self.client.restore(self.body,self.q);self.add(wrap(cancellation(self.q,'running')))
+        receipt=self.client.cancel(job)
+        self.assertFalse(receipt['execution_prevented'])
+        self.assertTrue(self.client.summary(job)['restored_without_execution_authority'])
+        with self.assertRaisesRegex(CyberError,'review_required'):self.client.execute(job)
+        self.assertEqual([r[0] for r in self.requests],['/v1/house/cancel'])
+
+    def test_lost_cancel_ack_never_reauthorizes_execute(self):
+        job=self.job();self.responses.append((None,None,{}))
+        with self.assertRaises(CyberError):self.client.cancel(job)
+        self.assertEqual(self.client.summary(job)['cancellation_observation'],'outcome_unknown')
+        self.assertIsNone(self.client.summary(job)['last_cancellation_requested'])
+        with self.assertRaisesRegex(CyberError,'review_required'):self.client.execute(job)
+        self.assertEqual(sum(r[0].endswith('/cancel') for r in self.requests),1)
+
+    def test_cancel_interrupts_preserve_unknown_outcome_and_execution_fence(self):
+        for error in (KeyboardInterrupt,SystemExit,RuntimeError):
+            with self.subTest(error=error.__name__):
+                job=self.job()
+                with patch.object(self.client,'_call',side_effect=error):
+                    with self.assertRaises(error):self.client.cancel(job)
+                self.assertEqual(self.client.summary(job)['cancellation_observation'],'outcome_unknown')
+                with self.assertRaisesRegex(CyberError,'review_required'):self.client.execute(job)
+
+    def test_cancel_rejects_changed_identity_privilege_or_false_cleanup(self):
+        mutations=[{'quote_id':'e'*32},{'request_sha256':'f'*64},{'cleanup_verified':True},
+            {'retry_authorized':True},{'charged_microusd':1},{'settlement':'paid'},
+            {'semantic_acceptance':True},{'requested':1},{'requested_at':True},
+            {'execution_prevented':1},{'last_observed_state':'completed'},
+            {'state_at_request':'running'},{'extra':'ignored'}]
+        for change in mutations:
+            with self.subTest(fields=list(change)):
+                job=self.job();self.add(wrap(dict(cancellation(self.q),**change)))
+                with self.assertRaisesRegex(CyberError,'binding_mismatch'):self.client.cancel(job)
+                self.assertEqual(self.client.summary(job)['cancellation_observation'],'outcome_unknown')
+                with self.assertRaisesRegex(CyberError,'review_required'):self.client.execute(job)
+
+    def test_repeat_cancel_preserves_immutable_request_and_rejects_regression(self):
+        job=self.job();receipt=cancellation(self.q,'running')
+        self.add(wrap(receipt));self.client.cancel(job)
+        self.add(wrap(receipt));self.assertEqual(self.client.cancel(job),receipt)
+        self.add(wrap(dict(receipt,last_observed_state='interrupted')));self.client.cancel(job)
+        self.add(wrap(receipt))
+        with self.assertRaisesRegex(CyberError,'binding_mismatch'):self.client.cancel(job)
+        self.assertEqual(self.client.summary(job)['last_cancellation_state'],'interrupted')
+        self.add(wrap(dict(receipt,requested_at=receipt['requested_at']+1,last_observed_state='interrupted')))
+        with self.assertRaisesRegex(CyberError,'binding_mismatch'):self.client.cancel(job)
+
+    def test_terminal_job_cancel_does_not_claim_output_receipt(self):
+        job=self.job();receipt=cancellation(self.q,'completed')
+        self.add(wrap(receipt));self.assertFalse(self.client.cancel(job)['requested'])
+        self.assertFalse(self.client.summary(job)['validated_output_received'])
+        self.add(wrap(cancellation(self.q)))
+        with self.assertRaisesRegex(CyberError,'binding_mismatch'):self.client.cancel(job)
+
+    def test_cancel_rejects_other_client_job_without_network(self):
+        job=self.job();other=HouseClient(base_url=self.base,token_file=self.token)
+        before=len(self.requests)
+        with self.assertRaisesRegex(CyberError,'owner_mismatch'):other.cancel(job)
+        self.assertEqual(len(self.requests),before)
+
+    def test_status_cannot_complete_after_acknowledged_cancellation(self):
+        for requested_state,observed_state in (('quoted','quoted'),('running','running'),('running','interrupted')):
+            with self.subTest(requested=requested_state,observed=observed_state):
+                job=self.job();receipt=cancellation(self.q,requested_state)
+                receipt['last_observed_state']=observed_state
+                self.add(wrap(receipt));self.client.cancel(job)
+                for response in (self.answer,dict(self.q,state='completed',outcome='completed')):
+                    self.add(wrap(response))
+                    with self.assertRaisesRegex(CyberError,'binding_mismatch'):self.client.status(job)
+                    summary=self.client.summary(job)
+                    self.assertFalse(summary['validated_output_received'])
+                    self.assertEqual(summary['last_validated_state'],'quoted')
+
+    def test_terminal_cancel_observation_fences_stale_status(self):
+        for state in ('completed','interrupted'):
+            with self.subTest(state=state):
+                job=self.job();self.add(wrap(cancellation(self.q,state)));self.client.cancel(job)
+                self.add(wrap(self.q))
+                with self.assertRaisesRegex(CyberError,'binding_mismatch'):self.client.status(job)
+                self.assertEqual(self.client.summary(job)['last_cancellation_state'],state)
+                good=(self.answer if state=='completed' else dict(self.q,state='interrupted',outcome='outcome_unknown'))
+                self.add(wrap(good));self.client.status(job)
+                self.assertEqual(self.client.summary(job)['last_validated_state'],state)
+
+    def test_stop_before_admission_cannot_later_report_running(self):
+        job=self.job();self.add(wrap(cancellation(self.q)));self.client.cancel(job)
+        self.add(wrap(dict(self.q,state='running')))
+        with self.assertRaisesRegex(CyberError,'binding_mismatch'):self.client.status(job)
 
     def test_summary_is_a_private_read_only_projection_without_content(self):
         job = self.job()
