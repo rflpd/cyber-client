@@ -32,6 +32,16 @@ record = client.execute(job)  # at most one submission in this client instance
 record = client.status(job)
 ```
 
+`timeout` defaults to 15 seconds (maximum 60) for connection/request writing and
+for quote, status and cancellation calls. `execution_timeout` separately allows
+up to 345 seconds by default (maximum 360) to receive an execute response after
+the request was sent. An absolute response timer also bounds slow headers or
+trickling bodies. DNS resolution is not protected by a hard process deadline.
+This transport allowance does not extend the server's job,
+invitation or operator-grant deadline. A timeout or lost response consumes no
+new execution authority: retain the same job and reconcile status; never submit
+a replacement or retry execution automatically.
+
 The request contains exactly `schema` (`cyber-house-trial/1`), `request_id`,
 `profile_id`, `task_contract_sha256`, `resource_contract_sha256`, `prompt` and
 `max_output_tokens`. Profiles are versioned configurations, not aliases for the
@@ -105,9 +115,10 @@ the SDK does not protect credentials against another process running as you.
 HTTPS uses normal certificate verification. HTTP is allowed only for a literal
 loopback address in local tests. Redirects and ambient proxies are not used.
 Responses are capped at 256 KiB, with strict JSON and protocol validation. Errors
-use fixed categories and never echo server error bodies or tokens. The configurable
-0.1–60 second timeout bounds socket waits, with elapsed-time checks while reading
-the body; it is not a hard wall-clock deadline for DNS or header trickling.
+use fixed categories and never echo server error bodies or tokens. The short
+`timeout` and separate `execution_timeout` budgets above bound socket waits;
+an absolute response timer closes slow headers or bodies. DNS resolution does not
+have a hard process deadline.
 
 The SDK does not grant retention/deletion guarantees, publishing permission,
 payments, model access or an execution budget. Use synthetic data until the
@@ -176,3 +187,12 @@ server-adapter checks with temporary Stores exercised both prepared profiles:
 restored stop requests were idempotent, both client and server refused subsequent
 execution, and each Store retained one quote, one cancellation and zero attempts.
 Server/thread cleanup passed. No model, remote delivery or paid provider ran.
+
+The execution-response timeout increment passed all 46 client tests. Delayed
+execution responses can outlast the short connection budget, while status calls
+stay short; trickling headers and lost responses retain the submission guard.
+A separate check connected this SDK to the actual private Unix HTTP adapter and
+a temporary canonical Store. The selected Qwen review request produced one quote
+and one cancellation. Protected execution was rejected before admission, leaving
+zero attempts; socket and temporary-state cleanup passed. This local transport
+check does not establish remote delivery or installed service readiness.

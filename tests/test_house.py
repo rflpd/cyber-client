@@ -1,5 +1,6 @@
 """Synthetic HTTP only: no model, provider, real credential or execution service."""
 import copy
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -7,6 +8,7 @@ from pathlib import Path
 import socket
 import tempfile
 import threading
+import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch
@@ -52,6 +54,35 @@ def cancellation(q, state='quoted'):
         state_at_request=state if requested else None,requested_at=1794040000 if requested else None,
         last_observed_state=state,execution_prevented=state=='quoted',cleanup_verified=False,
         retry_authorized=False,charged_microusd=0,settlement='disabled',semantic_acceptance=False)
+
+@contextmanager
+def delayed_house_server(saved_quote, saved_result, *, delay=.2, trickle=False):
+    calls=[]
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self,*args):pass
+        def do_POST(self):
+            self.rfile.read(int(self.headers['Content-Length']))
+            calls.append(self.path)
+            try:
+                if self.path.endswith('/quotes'):
+                    value=wrap(saved_quote)
+                else:
+                    if trickle:
+                        for byte in b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n':
+                            self.connection.sendall(bytes([byte]));time.sleep(.03)
+                        return
+                    time.sleep(delay);value=wrap(saved_result)
+                raw=json.dumps(value).encode()
+                self.send_response(200);self.send_header('Content-Type','application/json')
+                self.send_header('Content-Length',str(len(raw)));self.end_headers();self.wfile.write(raw)
+            except OSError:pass
+    class Server(ThreadingHTTPServer):
+        daemon_threads=False
+        def handle_error(self,*args):pass
+    server=Server(('127.0.0.1',0),Handler)
+    thread=threading.Thread(target=server.serve_forever,kwargs={'poll_interval':.01});thread.start()
+    try:yield 'http://127.0.0.1:%d/v1/house'%server.server_port,calls
+    finally:server.shutdown();server.server_close();thread.join()
 
 class HouseTests(unittest.TestCase):
     @classmethod
@@ -348,6 +379,38 @@ class HouseTests(unittest.TestCase):
                             (b'{}',{'Transfer-Encoding':'chunked'})]:
             self.add(raw,headers=headers)
             with self.assertRaises(CyberError):self.client.quote(self.body)
+    def test_execute_has_separate_response_budget_while_status_stays_short(self):
+        with delayed_house_server(self.q,self.answer) as (endpoint,calls):
+            client=HouseClient(base_url=endpoint,token_file=self.token,timeout=.1,execution_timeout=.7)
+            job=client.quote(self.body)
+            self.assertEqual(client.execute(job)['state'],'completed')
+            with self.assertRaises(CyberError):client.status(job)
+            self.assertEqual(calls.count('/v1/house/execute'),1)
+            self.assertEqual(client.summary(job)['last_validated_state'],'completed')
+
+    def test_execute_response_deadline_keeps_submission_consumed(self):
+        with delayed_house_server(self.q,self.answer,delay=.3) as (endpoint,calls):
+            client=HouseClient(base_url=endpoint,token_file=self.token,timeout=1,execution_timeout=.1)
+            job=client.quote(self.body)
+            with self.assertRaises(CyberError):client.execute(job)
+            with self.assertRaises(CyberError):client.execute(job)
+            self.assertEqual(calls.count('/v1/house/execute'),1)
+            self.assertEqual(client.summary(job)['observation'],'execution_outcome_unknown')
+
+    def test_absolute_response_deadline_closes_trickling_headers(self):
+        with delayed_house_server(self.q,self.answer,trickle=True) as (endpoint,calls):
+            client=HouseClient(base_url=endpoint,token_file=self.token,timeout=.1)
+            job=client.quote(self.body);started=time.monotonic()
+            with self.assertRaises(CyberError):client.status(job)
+            self.assertLess(time.monotonic()-started,.6)
+            self.assertEqual(calls.count('/v1/house/status'),1)
+
+    def test_execution_response_budget_is_finite_and_bounded(self):
+        for timeout in (True,0,-1,float('nan'),float('inf'),361):
+            with self.subTest(timeout=timeout),self.assertRaises(CyberError):
+                HouseClient(base_url=self.base,token_file=self.token,execution_timeout=timeout)
+        self.assertEqual(self.requests,[])
+
     def test_endpoint_input_rejections(self):
         for url in ('http://example.com/v1/house','https://x/v1/house?token=x','https://u:p@x/v1/house',
                     'https://x/%2e/v1/house','https://x/../v1/house','https://x/v1/other','https://x/v1/house#f'):

@@ -12,6 +12,7 @@ import json
 import math
 import os
 import re
+import socket
 import ssl
 import stat
 import time
@@ -152,13 +153,15 @@ class HouseClient:
     The operator must provide a reviewed deployed endpoint and permitted access.
     Instantiating this object neither discovers nor activates a house service.
     """
-    def __init__(self, *, base_url, token_file, timeout=15):
+    def __init__(self, *, base_url, token_file, timeout=15, execution_timeout=345):
         self._endpoint = _endpoint(base_url)
-        if (type(timeout) not in (int, float) or not math.isfinite(timeout)
-                or not .1 <= timeout <= 60):
-            raise CyberError('invalid_http_timeout')
+        for value, maximum in ((timeout, 60), (execution_timeout, 360)):
+            if (type(value) not in (int, float) or not math.isfinite(value)
+                    or not .1 <= value <= maximum):
+                raise CyberError('invalid_http_timeout')
         self._token_file = token_file
         self.timeout = timeout
+        self.execution_timeout = execution_timeout
         self._submitted = set()
         self._submission_lock = threading.Lock()
 
@@ -177,6 +180,7 @@ class HouseClient:
             context=ssl.create_default_context()) if p.scheme == 'https' else
             http.client.HTTPConnection(p.hostname, p.port, timeout=self.timeout))
         started = time.monotonic()
+        response_timer = None
         try:
             connection.connect()
             sock = connection.sock
@@ -187,6 +191,25 @@ class HouseClient:
             connection.request('POST', p.path.rstrip('/') + '/' + operation, body=payload,
                 headers={'Content-Type': 'application/json', 'Accept': 'application/json',
                     'Accept-Encoding': 'identity', 'Connection': 'close', 'Authorization': 'Bearer ' + token})
+            remaining = self.timeout - (time.monotonic() - started)
+            if remaining <= 0:
+                raise CyberError('house_transport_outcome_unknown')
+            # Execute may legitimately wait for a 300s job plus cleanup. Other
+            # operations keep the original short whole-request budget.
+            response_budget = self.execution_timeout if operation == 'execute' else remaining
+            started = time.monotonic()
+            sock.settimeout(response_budget)
+            def expire_response():
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+            response_timer = threading.Timer(response_budget, expire_response)
+            response_timer.daemon = True
+            try:
+                response_timer.start()
+            except Exception:
+                raise CyberError('house_transport_outcome_unknown') from None
             response = connection.getresponse()
             with response:
                 if 300 <= response.status < 400:
@@ -206,7 +229,7 @@ class HouseClient:
                     raise CyberError('response_size_limit')
                 raw = bytearray()
                 while True:
-                    remaining = self.timeout - (time.monotonic() - started)
+                    remaining = response_budget - (time.monotonic() - started)
                     if remaining <= 0:
                         raise CyberError('house_transport_outcome_unknown')
                     sock.settimeout(remaining)
@@ -220,6 +243,8 @@ class HouseClient:
                         break
                 if length is not None and len(raw) != int(length):
                     raise CyberError('invalid_house_response')
+                if time.monotonic() - started >= response_budget:
+                    raise CyberError('house_transport_outcome_unknown')
                 value = _decode(raw)
                 if not isinstance(value, dict):
                     raise CyberError('invalid_house_response')
@@ -229,6 +254,10 @@ class HouseClient:
         except (ValueError, UnicodeError, RecursionError):
             raise CyberError('invalid_house_response') from None
         finally:
+            if response_timer is not None:
+                response_timer.cancel()
+                if response_timer.ident is not None:
+                    response_timer.join()
             connection.close()
 
     def quote(self, request):
