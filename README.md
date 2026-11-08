@@ -40,7 +40,9 @@ An experimental [buyer and supplier client](SUPPLIER_API.md) also covers invited
 registration, qualification requirements, expiring offers and the fixed $0 hiring
 flow. It has no default or advertised public endpoint and grants no account,
 provider or payment authority. Each operation is explicit; unknown outcomes are
-reconciled through saved status.
+reconciled through saved status. Its offer evidence explains task qualification,
+declared model/configuration, availability and unknown full costs. The page-local
+$0 shortlist preserves price ties and never automatically selects or reserves work.
 
 ## Quickstart
 

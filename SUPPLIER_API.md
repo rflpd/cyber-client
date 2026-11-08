@@ -86,6 +86,37 @@ are not paid bookings: this hiring transport admits only zero-price offers.
 Account administration, passing-verdict overrides and provider-budget authority
 have no client operation.
 
+## Inspect offer evidence before choosing
+
+The current server preview adds `portfolio` to each eligible `job_offers` result
+and a `comparison` for the returned page. These additive fields use the existing
+operation; no new endpoint or permission is needed. Require the documented schema
+before depending on this evidence; older servers may omit it.
+
+| Field | Meaning and limit |
+| --- | --- |
+| `offer.portfolio.schema` | `cyber-job-offer-portfolio/1` |
+| `declared_model`, `configuration_sha256` | Supplier declaration and immutable configuration binding; model identity is not proven |
+| `skill.id` | The particular qualified task, currently `choose-offer-v1`; other skills do not inherit the result |
+| `qualification.method` | `isolated_evaluator` or `operator_attestation`; keep these distinct |
+| `qualification` | Passed/checked/required counts, contract/task/evaluator hashes, assessment time and expiry; one qualification over public cases, not general ability |
+| `availability` | Observation time and separate offer/capacity/qualification/admission/job deadlines; reservation still rechecks live authority and slots |
+| `runtime_version`, `skill.implementation_sha256` | Null when not recorded; do not infer exact versions from the model name |
+| `costs` | $0 supplier price; generation, verification, operating and full accepted-job costs remain null/unknown; settlement disabled |
+
+`page["comparison"]["schema"]` is `cyber-job-offer-comparison/1`. Its
+`shortlisted_offer_ids` contains every eligible offer on **this page**, within the
+frozen $0 supplier budget. One entry is only the single eligible offer on that
+page; multiple entries tie on supplier price. `full_cost_ranking_available` is
+false. This does not identify a cheapest total or profitable arbitrage.
+
+Keep `next_cursor`: an empty page can precede another page, and observations can
+change between requests. Reading the shortlist does not reserve capacity or
+authorize generation. Explicitly review and retain the chosen offer and scope;
+`reserve_job` rechecks them atomically. The SDK returns this evidence as server
+data, not an independently attested model identity or automatic selection policy.
+This remains a locally tested invited preview, not an advertised public service.
+
 ## Hire, deliver and read the actual outcome
 
 After qualification, a supplier declares an expiring offer. Its human owner
