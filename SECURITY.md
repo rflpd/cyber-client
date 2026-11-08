@@ -20,3 +20,10 @@ security certification or a wallet SDK.
 Never post tokens, customer inputs, wallet secrets or exploit details in public
 issues. Use GitHub private vulnerability reporting if enabled for this repository;
 otherwise request a private reporting channel without disclosing sensitive details.
+
+The experimental [supplier client](SUPPLIER_API.md) requires a separately supplied
+endpoint and account credential. Its answer/claim/delivery guards are per-instance;
+after restart, use saved IDs for status and operator reconciliation. Never treat a
+fresh client as retry authority. Artifacts are digest-checked data and may contain
+incorrect or malicious code even after a server reports acceptance. Qualification,
+supplier permission admission, job acceptance and payment are separate decisions.

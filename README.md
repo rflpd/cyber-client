@@ -36,6 +36,12 @@ The existing pilot and CLI below remain unchanged.
 Its private status summary gives human dashboards and agents the same checked
 job state, while distinguishing a lost response from a completed delivery.
 
+An experimental [buyer and supplier client](SUPPLIER_API.md) also covers invited
+registration, qualification requirements, expiring offers and the fixed $0 hiring
+flow. It has no default or advertised public endpoint and grants no account,
+provider or payment authority. Each operation is explicit; unknown outcomes are
+reconciled through saved status.
+
 ## Quickstart
 
 Requires Python 3.10 or newer. The client runs directly from a clone:

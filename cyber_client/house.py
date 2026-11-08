@@ -6,41 +6,20 @@ No code execution, paid fallback, qualification or payment functionality exists.
 """
 import copy
 import hashlib
-import http.client
 import ipaddress
-import json
 import math
 import os
 import re
-import socket
-import ssl
 import stat
-import time
 import threading
 from urllib.parse import urlsplit
 
 from . import CyberError
 from . import house_contract as contract
+from ._http import _encode, _decode, post_json
 
 MAX_RESPONSE = 262144
 MAX_REQUEST = 65536
-
-
-def _encode(value):
-    return json.dumps(value, ensure_ascii=False, allow_nan=False).encode('utf-8')
-
-
-def _decode(raw):
-    def unique(pairs):
-        value = {}
-        for key, item in pairs:
-            if key in value:
-                raise ValueError()
-            value[key] = item
-        return value
-    def reject(_):
-        raise ValueError()
-    return json.loads(raw, object_pairs_hook=unique, parse_constant=reject)
 
 
 def _validate_cancellation(quote, response):
@@ -175,90 +154,10 @@ class HouseClient:
         if len(payload) > MAX_REQUEST:
             raise CyberError('request_size_limit')
         token = _token(self._token_file)
-        p = self._endpoint
-        connection = (http.client.HTTPSConnection(p.hostname, p.port, timeout=self.timeout,
-            context=ssl.create_default_context()) if p.scheme == 'https' else
-            http.client.HTTPConnection(p.hostname, p.port, timeout=self.timeout))
-        started = time.monotonic()
-        response_timer = None
-        try:
-            connection.connect()
-            sock = connection.sock
-            remaining = self.timeout - (time.monotonic() - started)
-            if remaining <= 0:
-                raise CyberError('house_transport_outcome_unknown')
-            sock.settimeout(remaining)
-            connection.request('POST', p.path.rstrip('/') + '/' + operation, body=payload,
-                headers={'Content-Type': 'application/json', 'Accept': 'application/json',
-                    'Accept-Encoding': 'identity', 'Connection': 'close', 'Authorization': 'Bearer ' + token})
-            remaining = self.timeout - (time.monotonic() - started)
-            if remaining <= 0:
-                raise CyberError('house_transport_outcome_unknown')
-            # Execute may legitimately wait for a 300s job plus cleanup. Other
-            # operations keep the original short whole-request budget.
-            response_budget = self.execution_timeout if operation == 'execute' else remaining
-            started = time.monotonic()
-            sock.settimeout(response_budget)
-            def expire_response():
-                try:
-                    sock.shutdown(socket.SHUT_RDWR)
-                except OSError:
-                    pass
-            response_timer = threading.Timer(response_budget, expire_response)
-            response_timer.daemon = True
-            try:
-                response_timer.start()
-            except Exception:
-                raise CyberError('house_transport_outcome_unknown') from None
-            response = connection.getresponse()
-            with response:
-                if 300 <= response.status < 400:
-                    raise CyberError('redirect_refused', response.status)
-                if response.status not in (200, 202):
-                    code = {401: 'unauthorized', 403: 'unauthorized', 409: 'house_review_required',
-                            429: 'quota_exhausted'}.get(response.status, 'house_http_error')
-                    raise CyberError(code, response.status)
-                if (response.getheader('Content-Type', '').split(';')[0].strip().lower() != 'application/json'
-                        or response.getheader('Content-Encoding', 'identity').lower() != 'identity'):
-                    raise CyberError('invalid_house_response')
-                length = response.getheader('Content-Length')
-                transfer = response.getheader('Transfer-Encoding')
-                if transfer is not None and (transfer.lower() != 'chunked' or length is not None):
-                    raise CyberError('invalid_house_response')
-                if length is not None and (not length.isdecimal() or len(length) > 10 or int(length) > MAX_RESPONSE):
-                    raise CyberError('response_size_limit')
-                raw = bytearray()
-                while True:
-                    remaining = response_budget - (time.monotonic() - started)
-                    if remaining <= 0:
-                        raise CyberError('house_transport_outcome_unknown')
-                    sock.settimeout(remaining)
-                    block = response.read1(min(4096, MAX_RESPONSE + 1 - len(raw)))
-                    if not block:
-                        break
-                    raw.extend(block)
-                    if len(raw) > MAX_RESPONSE:
-                        raise CyberError('response_size_limit')
-                    if length is not None and len(raw) == int(length):
-                        break
-                if length is not None and len(raw) != int(length):
-                    raise CyberError('invalid_house_response')
-                if time.monotonic() - started >= response_budget:
-                    raise CyberError('house_transport_outcome_unknown')
-                value = _decode(raw)
-                if not isinstance(value, dict):
-                    raise CyberError('invalid_house_response')
-                return value
-        except (OSError, TimeoutError, http.client.HTTPException):
-            raise CyberError('house_transport_outcome_unknown') from None
-        except (ValueError, UnicodeError, RecursionError):
-            raise CyberError('invalid_house_response') from None
-        finally:
-            if response_timer is not None:
-                response_timer.cancel()
-                if response_timer.ident is not None:
-                    response_timer.join()
-            connection.close()
+        return post_json(self._endpoint, self._endpoint.path.rstrip('/') + '/' + operation,
+            payload, token, timeout=self.timeout,
+            response_timeout=self.execution_timeout if operation == 'execute' else None,
+            prefix='house', max_response=MAX_RESPONSE)
 
     def quote(self, request):
         """Request one quote for the caller's saved, exact request; never auto-execute."""
