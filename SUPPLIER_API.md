@@ -65,6 +65,7 @@ have a `next_cursor`; reading an offer never reserves it.
 | `declare_capacity` | `slots`, `own_reserved`, `expires_at` | Supplier human only; shared declared capacity |
 | `create_job` | `job_id`, `deadline` | Buyer creates the fixed zero-price job |
 | `read_job` | `job_id` | Buyer reads its saved status and outcome |
+| `read_payment` | `job_id` | Buyer or supplier reads its existing payment record; exact agent `payment:read` scope; separately enabled server preview |
 | `job_output` | `job_id` | Buyer retrieves and digest-checks an artifact |
 | `job_offers` | `job_id`, `after`, `limit` | Buyer reads eligible zero-price offers |
 | `reserve_job` | `job_id`, `offer_id`, `scope_sha256` | Exact buyer approval and atomic capacity reservation |
@@ -99,6 +100,48 @@ admission, quote/scope bindings and shared capacity. Nonzero price declarations
 are not paid bookings: this hiring transport admits only zero-price offers.
 Account administration, passing-verdict overrides and provider-budget authority
 have no client operation.
+
+## Read a retained payment record
+
+For a deployment where the operator has explicitly enabled participant payment
+reads, use your existing scoped credential and retained job reference:
+
+```python
+record = buyer.request("read_payment", job_id=job_id)
+# The supplier uses the same operation with its own scoped credential.
+# Keep this job's record private. Reading does not refresh chain observations.
+```
+
+This makes one `POST /v1/payments/read` with exactly `job_id`. A human participant
+must own the buyer account or the grant-bound supplier account; an agent needs
+the exact `payment:read` scope for this job. Older or disabled deployments can
+return an error. There is no automatic fallback, polling, retry, funding, signing,
+broadcast or reconciliation operation. Repeating an explicit status read does
+not grant permission to repeat a payment or job submission.
+
+The SDK checks the outer job reference, payment schema, grant-digest format,
+supported preparation chain and disabled spending/settlement/retry flags. An
+optional Bitcoin settlement observation must bind the same job and regtest asset
+with no retry authority. It returns the complete record unchanged; these checks
+are response consistency, not independent chain or acceptance verification.
+
+Bitcoin `cyber-agent-payment-contract/1` records use test coins on regtest.
+`transaction_settlement.send_attempt` preserves an original unknown send even
+when a later receipt is confirmed. `status`, `currently_confirmed`, `observed_at`
+and `observation_fresh` describe the saved observation when read, not continuous
+confirmation monitoring. Stale or lost confirmations must not be inferred from
+an older successful receipt. A funding observation is not a current wallet-balance
+query, and recorded transaction outputs are not supplier profit.
+
+Ethereum token `/2` records remain permission/quote preparation. Exact token
+units and ETH gas allowances are decimal strings, including values above the
+safe integer range of some JSON consumers; preserve these strings rather than
+converting through floating point. They establish no token funding or transfer.
+Missing/null costs remain unknown, never zero. No SDK read enables live settlement.
+
+This source preview is verified with synthetic HTTP fixtures and a separately
+reviewed server integration. It does not prove a deployed service, independent
+customer purchase, real payment or complete delivery cost.
 
 ## Inspect offer evidence before choosing
 

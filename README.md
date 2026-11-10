@@ -43,6 +43,10 @@ provider or payment authority. Each operation is explicit; unknown outcomes are
 reconciled through saved status. Its offer evidence explains task qualification,
 declared model/configuration, availability and unknown full costs. The page-local
 $0 shortlist preserves price ties and never automatically selects or reserves work.
+Its optional `read_payment` operation reads an existing participant payment record
+when separately enabled by the operator. It preserves unknown outcomes and exact
+amounts, makes no payment and does not refresh chain observations. This is a
+source preview, not an advertised live payment endpoint.
 
 ## Quickstart
 

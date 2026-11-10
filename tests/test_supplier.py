@@ -17,6 +17,17 @@ from cyber_client.supplier import SupplierClient, SCHEMA, artifact_bytes
 TOKEN = 'cyber_' + 's' * 43
 
 
+def payment_record():
+    return {'schema':'cyber-agent-payment-contract/1', 'job_id':'j', 'grant_sha256':'a'*64,
+        'caps':{'chain':'regtest','asset':'BTC_REGTEST'}, 'settlement':'disabled',
+        'spending_authorized':False, 'automatic_retry':False, 'funding':'unknown',
+        'transaction_settlement':{'schema':'cyber-agent-settlement-status/1','job_id':'j',
+            'chain':'regtest','asset':'BTC_REGTEST','live_settlement':'disabled',
+            'spending_authorized':False,'automatic_retry':False,'retry_authorized':False,
+            'send_attempt':'unknown','status':'confirmation_stale','currently_confirmed':False,
+            'receipt':{'fee_sat':2000,'outputs_sat':{'supplier':90000}},'complete_delivery_cost_microusd':None}}
+
+
 class SupplierTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -180,6 +191,65 @@ class SupplierTests(unittest.TestCase):
         with self.assertRaisesRegex(CyberError, 'private_supplier_token'):
             self.client.request('read_service', service_id='s')
         self.assertEqual(self.requests, [])
+
+    def test_payment_reads_preserve_unknown_and_stale_observations_without_polling(self):
+        expected=payment_record()
+        for _ in range(2):
+            self.add(expected)
+            self.assertEqual(self.client.request('read_payment',job_id='j'),expected)
+        self.assertEqual(len(self.requests),2)
+        self.assertTrue(all(path=='/v1/payments/read' and body=={'job_id':'j'}
+                            for path,_,body in self.requests))
+        self.assertEqual(self.client._attempted,set())
+
+    def test_payment_token_preparation_keeps_large_decimal_strings_exact(self):
+        record=payment_record();record.pop('transaction_settlement')
+        record.update(schema='cyber-agent-payment-contract/2',caps={
+            'schema':'cyber-ethereum-payment-caps/1','chain':'ethereum',
+            'maximum_total_gas_wei':'30000000000000000'},
+            token_quote={'maximum_total_gas_wei':'25000000000000000','actual_settlement_gas_wei':None})
+        self.add(record)
+        self.assertEqual(self.client.request('read_payment',job_id='j'),record)
+        self.assertEqual(len(self.requests),1)
+
+    def test_payment_authority_and_job_mismatches_are_rejected(self):
+        changes=({'job_id':'other'},{'schema':'future-schema'}, {'grant_sha256':'invalid'},
+            {'settlement':'enabled'},{'spending_authorized':True},{'automatic_retry':0},
+            {'caps':None},{'caps':{'chain':'main','asset':'BTC'}},
+            {'schema':'cyber-agent-payment-contract/2','caps':{'schema':'cyber-ethereum-payment-caps/1','chain':'ethereum'}})
+        for change in changes:
+            with self.subTest(change=tuple(change)):
+                self.add(payment_record()|change)
+                with self.assertRaisesRegex(CyberError,'supplier_response_binding_mismatch'):
+                    self.client.request('read_payment',job_id='j')
+        self.assertEqual(len(self.requests),len(changes))
+
+    def test_nested_payment_observation_cannot_change_job_chain_or_authority(self):
+        changes=({'job_id':'other'},{'schema':'future-schema'},{'chain':'main'}, {'asset':'BTC'},
+            {'live_settlement':'enabled'},{'spending_authorized':True}, {'automatic_retry':True},
+            {'retry_authorized':True})
+        for change in changes:
+            record=payment_record();record['transaction_settlement'].update(change)
+            self.add(record)
+            with self.assertRaisesRegex(CyberError,'supplier_response_binding_mismatch'):
+                self.client.request('read_payment',job_id='j')
+        self.assertEqual(len(self.requests),len(changes))
+
+    def test_payment_transport_failure_is_one_request_and_errors_hide_server_body(self):
+        for status in (None,404,403,503):
+            self.responses.append((status, {'error':'private diagnostic '+TOKEN}, {}))
+            before=len(self.requests)
+            with self.assertRaises(CyberError) as caught:self.client.request('read_payment',job_id='j')
+            self.assertNotIn(TOKEN,str(caught.exception))
+            self.assertEqual(len(self.requests),before+1)
+        self.assertEqual(self.client._attempted,set())
+
+    def test_payment_read_has_closed_fields_and_no_payment_mutations(self):
+        for fields in ({},{'job_id':True},{'job_id':'../j'},{'job_id':'j','retry':True}):
+            with self.assertRaises(CyberError):self.client.request('read_payment',**fields)
+        for operation in ('authorize_payment','reserve_funding','sign_payment','send_payment','reconcile_payment'):
+            with self.assertRaises(CyberError):self.client.request(operation,job_id='j')
+        self.assertEqual(self.requests,[])
 
 
 if __name__ == '__main__': unittest.main()

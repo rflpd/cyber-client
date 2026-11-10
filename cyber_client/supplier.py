@@ -30,6 +30,7 @@ OPERATIONS = {
     'read_offer': ('suppliers/offers/read', ('offer_id',)),
     'create_job': ('jobs/create', ('job_id', 'deadline')),
     'read_job': ('jobs/read', ('job_id',)),
+    'read_payment': ('payments/read', ('job_id',)),
     'job_output': ('jobs/output', ('job_id',)),
     'job_offers': ('jobs/offers', ('job_id', 'after', 'limit')),
     'reserve_job': ('jobs/reserve', ('job_id', 'offer_id', 'scope_sha256')),
@@ -83,7 +84,9 @@ class SupplierClient:
 
     Use ``request(operation, **fields)`` with an operation from OPERATIONS. Its
     return value is the server's record, not independent proof of work/payment.
-    No method provisions accounts, admits suppliers or makes provider calls.
+    Payment reads return retained participant records without refreshing chain
+    observations. No method provisions accounts, admits suppliers, moves funds
+    or makes provider calls.
     """
     def __init__(self, *, base_url, token_file, timeout=30):
         self._endpoint = _endpoint(base_url)
@@ -159,6 +162,33 @@ class SupplierClient:
                     raise ValueError()
             if operation == 'claim_job' and record.get('provider_calls_authorized') is not False:
                 raise ValueError()
+            if operation == 'read_payment':
+                schema = record.get('schema')
+                if (schema not in ('cyber-agent-payment-contract/1', 'cyber-agent-payment-contract/2')
+                        or type(record.get('grant_sha256')) is not str
+                        or re.fullmatch('[a-f0-9]{64}', record['grant_sha256']) is None
+                        or record.get('settlement') != 'disabled'
+                        or record.get('spending_authorized') is not False
+                        or record.get('automatic_retry') is not False
+                        or type(record.get('caps')) is not dict):
+                    raise ValueError()
+                caps = record['caps']
+                if schema.endswith('/1'):
+                    if caps.get('chain') != 'regtest' or caps.get('asset') != 'BTC_REGTEST':
+                        raise ValueError()
+                elif (caps.get('schema') != 'cyber-ethereum-payment-caps/1'
+                        or caps.get('chain') != 'ethereum' or 'transaction_settlement' in record):
+                    raise ValueError()
+                observation = record.get('transaction_settlement')
+                if observation is not None and (type(observation) is not dict
+                        or observation.get('schema') != 'cyber-agent-settlement-status/1'
+                        or observation.get('job_id') != body['job_id']
+                        or observation.get('chain') != 'regtest' or observation.get('asset') != 'BTC_REGTEST'
+                        or observation.get('live_settlement') != 'disabled'
+                        or observation.get('spending_authorized') is not False
+                        or observation.get('automatic_retry') is not False
+                        or observation.get('retry_authorized') is not False):
+                    raise ValueError()
             if operation == 'job_output':
                 artifact_bytes(record)
             return record
