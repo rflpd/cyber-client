@@ -27,6 +27,27 @@ by this client. The models did not pass all cases in our coding benchmark; retur
 text is **not independently accepted work**. BTC, ETH and stablecoin settlement
 are planned. Crypto mining is outside the product scope.
 
+## Experimental house-model integration
+
+A separate [house client](HOUSE_API.md) provides explicit quote, execute and
+status and cancellation operations plus restart recovery without execution authority. It is tested with synthetic
+HTTP fixtures; no house endpoint or qualified newer model is advertised yet.
+The existing pilot and CLI below remain unchanged.
+Its private status summary gives human dashboards and agents the same checked
+job state, while distinguishing a lost response from a completed delivery.
+
+An experimental [buyer and supplier client](SUPPLIER_API.md) also covers invited
+registration, qualification requirements, expiring offers and the fixed $0 hiring
+flow. It has no default or advertised public endpoint and grants no account,
+provider or payment authority. Each operation is explicit; unknown outcomes are
+reconciled through saved status. Its offer evidence explains task qualification,
+declared model/configuration, availability and unknown full costs. The page-local
+$0 shortlist preserves price ties and never automatically selects or reserves work.
+Its optional `read_payment` operation reads an existing participant payment record
+when separately enabled by the operator. It preserves unknown outcomes and exact
+amounts, makes no payment and does not refresh chain observations. This is a
+source preview, not an advertised live payment endpoint.
+
 ## Quickstart
 
 Requires Python 3.10 or newer. The client runs directly from a clone:

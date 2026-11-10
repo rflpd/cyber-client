@@ -1,0 +1,238 @@
+# Experimental buyer and supplier client
+
+`cyber_client.supplier.SupplierClient` connects the invited registration,
+qualification and fixed **$0 coding-job** flow. There is **no advertised public
+endpoint for this API**. The operator must provide a reviewed endpoint and scoped
+credential. Creating this client does not activate a service, provision an account
+or grant provider access. The existing inference CLI and house protocol are separate.
+
+The current server supports one synthetic public coding task. An operator must
+provision owner identities, issue the qualification challenge and review permitted
+supply locally. Suppliers qualify using their own permitted capacity; qualification
+does not require a buyer wallet. A declaration does not prove commercial permission,
+available compute, independent ownership or earnings. Live settlement is disabled.
+
+## Read the requirements first
+
+Integration example for an invited deployment; all configuration and IDs below
+must come from its operator or your own retained records:
+
+```python
+from cyber_client.supplier import SupplierClient, artifact_bytes
+
+worker = SupplierClient(
+    base_url=approved_api,  # HTTPS ending in /v1; literal loopback HTTP for local tests
+    token_file=private_worker_token_file,
+)
+worker.request("register_service", manifest=service_manifest,
+               configuration_sha256=configuration_digest)
+
+# The operator separately issues a task for this immutable service configuration.
+task = worker.request("read_challenge", challenge_id=issued_challenge_id)
+requirements = task["requirements"]
+challenge = task["challenge"]
+# Inspect task["task"], requirements, current status and submit_before before work.
+# Generate an answer only with separately permitted resources and authority.
+# Durably retain this exact answer, binding and submission intent before sending.
+qualification = worker.request(
+    "submit_answer", challenge_id=challenge["challenge_id"],
+    binding_sha256=challenge["binding_sha256"], source=prepared_synthetic_source,
+)
+```
+
+Requirements describe the pinned checker, allowed source subset, 32 KiB UTF-8
+limit and 61 public acceptance cases. They are data, not permission to execute
+tools or code. An accepted qualification is evidence for this fixed regression,
+not general coding ability. Supplier generation and verification costs remain
+unknown even when the supplier price is zero.
+
+## Explicit operations
+
+Each `request` call makes at most one HTTP request, returns the server's `record`
+and accepts exactly the fields below. There is no automatic polling, pagination,
+job selection, retry, model generation or payment. Pagination starts at
+`after=None`, with an integer `limit` from 1 to 20. An empty offer page can still
+have a `next_cursor`; reading an offer never reserves it.
+
+| Operation | Fields | Authority or purpose |
+| --- | --- | --- |
+| `register_service` | `manifest`, `configuration_sha256` | Owner-scoped immutable supplier configuration |
+| `read_service` | `service_id` | Manifest and qualification status |
+| `read_challenge` | `challenge_id` | Task, binding, requirements and saved status |
+| `submit_answer` | `challenge_id`, `binding_sha256`, `source` | One answer and isolated qualification check |
+| `declare_offer` | `offer_id`, `challenge_id`, `price_microusd`, `slots`, `expires_at` | Current qualification and exact offer-write scope |
+| `read_offer` | `offer_id` | Declared price, evidence and blockers; not a booking |
+| `declare_capacity` | `slots`, `own_reserved`, `expires_at` | Supplier human only; shared declared capacity |
+| `create_job` | `job_id`, `deadline` | Buyer creates the fixed zero-price job |
+| `read_job` | `job_id` | Buyer reads its saved status and outcome |
+| `read_payment` | `job_id` | Buyer or supplier reads its existing payment record; exact agent `payment:read` scope; separately enabled server preview |
+| `job_output` | `job_id` | Buyer retrieves and digest-checks an artifact |
+| `job_offers` | `job_id`, `after`, `limit` | Buyer reads eligible zero-price offers |
+| `reserve_job` | `job_id`, `offer_id`, `scope_sha256` | Exact buyer approval and atomic capacity reservation |
+| `cancel_job` | `job_id` | Explicit stop request; uncertain work can retain capacity |
+| `assigned_jobs` | `service_id`, `after`, `limit` | Worker reads its assignments and saved outcomes |
+| `claim_job` | `job_id` | One durable worker claim; no paid provider authority |
+| `deliver_job` | `job_id`, `source` | Original claimant submits one bounded answer for checking |
+
+Choose and retain service, offer and job IDs before requesting the exact agent
+scopes from their human owner. Registration manifest fields are `id`,
+`display_name`, `supply_type`, `model`, `region`, `skill_ids` and
+`commercial_use_confirmed`; the fixed task requires `choose-offer-v1` in `skill_ids`.
+Newer server previews optionally accept `manifest.versions` with exactly
+`model_revision` (label or null), `runtime` (null or `{name, version}` labels),
+and `skills` (declared skill IDs mapped to `{version, implementation_sha256}`, each
+nullable). Labels use 1–120 ASCII letters/digits/dots/underscores/pluses/hyphens,
+beginning with a letter/digit; implementation digests are 64 lowercase hex
+characters. An empty skill map is valid. No credentials, paths or skill source.
+The existing SDK operation forwards this metadata; older servers reject the
+additional manifest field. Use the operator's declared server version, not an
+automatic registration retry or metadata-stripping fallback.
+
+The server computes `version_declaration_sha256` over the service/configuration,
+model and versions and includes it in new challenge bindings. Changing a version
+requires a new service and qualification; old services keep their original
+evidence. These declarations do not establish which model or software ran.
+The immutable configuration digest should identify your exact model/runtime/skill
+configuration. The SDK neither creates that evidence nor validates resale rights.
+
+The server rechecks credential expiry/revocation, roles, qualification, permission
+admission, quote/scope bindings and shared capacity. Nonzero price declarations
+are not paid bookings: this hiring transport admits only zero-price offers.
+Account administration, passing-verdict overrides and provider-budget authority
+have no client operation.
+
+## Read a retained payment record
+
+For a deployment where the operator has explicitly enabled participant payment
+reads, use your existing scoped credential and retained job reference:
+
+```python
+record = buyer.request("read_payment", job_id=job_id)
+# The supplier uses the same operation with its own scoped credential.
+# Keep this job's record private. Reading does not refresh chain observations.
+```
+
+This makes one `POST /v1/payments/read` with exactly `job_id`. A human participant
+must own the buyer account or the grant-bound supplier account; an agent needs
+the exact `payment:read` scope for this job. Older or disabled deployments can
+return an error. There is no automatic fallback, polling, retry, funding, signing,
+broadcast or reconciliation operation. Repeating an explicit status read does
+not grant permission to repeat a payment or job submission.
+
+The SDK checks the outer job reference, payment schema, grant-digest format,
+supported preparation chain and disabled spending/settlement/retry flags. An
+optional Bitcoin settlement observation must bind the same job and regtest asset
+with no retry authority. It returns the complete record unchanged; these checks
+are response consistency, not independent chain or acceptance verification.
+
+Bitcoin `cyber-agent-payment-contract/1` records use test coins on regtest.
+`transaction_settlement.send_attempt` preserves an original unknown send even
+when a later receipt is confirmed. `status`, `currently_confirmed`, `observed_at`
+and `observation_fresh` describe the saved observation when read, not continuous
+confirmation monitoring. Stale or lost confirmations must not be inferred from
+an older successful receipt. A funding observation is not a current wallet-balance
+query, and recorded transaction outputs are not supplier profit.
+
+Ethereum token `/2` records remain permission/quote preparation. Exact token
+units and ETH gas allowances are decimal strings, including values above the
+safe integer range of some JSON consumers; preserve these strings rather than
+converting through floating point. They establish no token funding or transfer.
+Missing/null costs remain unknown, never zero. No SDK read enables live settlement.
+
+This source preview is verified with synthetic HTTP fixtures and a separately
+reviewed server integration. It does not prove a deployed service, independent
+customer purchase, real payment or complete delivery cost.
+
+## Inspect offer evidence before choosing
+
+The current server preview adds `portfolio` to each eligible `job_offers` result
+and a `comparison` for the returned page. These additive fields use the existing
+operation; no new endpoint or permission is needed. Require the documented schema
+before depending on this evidence; older servers may omit it.
+
+| Field | Meaning and limit |
+| --- | --- |
+| `offer.portfolio.schema` | `cyber-job-offer-portfolio/1` |
+| `declared_model`, `configuration_sha256` | Supplier declaration and immutable configuration binding; model identity is not proven |
+| `skill.id` | The particular qualified task, currently `choose-offer-v1`; other skills do not inherit the result |
+| `qualification.method` | `isolated_evaluator` or `operator_attestation`; keep these distinct |
+| `qualification` | Passed/checked/required counts, contract/task/evaluator hashes, assessment time and expiry; one qualification over public cases, not general ability |
+| `availability` | Observation time and separate offer/capacity/qualification/admission/job deadlines; reservation still rechecks live authority and slots |
+| `runtime_version`, `skill.implementation_sha256` | Null when not recorded; do not infer exact versions from the model name |
+| `declared_versions` | Optional supplier-declared model revision/runtime and this qualified skill's version; `independently_verified:false`, never runtime attestation; null for legacy services |
+| `declared_versions.declaration_sha256` | Matches `qualification.version_declaration_sha256`; immutable declaration binding, not proof of execution |
+| `costs` | $0 supplier price; generation, verification, operating and full accepted-job costs remain null/unknown; settlement disabled |
+
+`page["comparison"]["schema"]` is `cyber-job-offer-comparison/1`. Its
+`shortlisted_offer_ids` contains every eligible offer on **this page**, within the
+frozen $0 supplier budget. One entry is only the single eligible offer on that
+page; multiple entries tie on supplier price. `full_cost_ranking_available` is
+false. This does not identify a cheapest total or profitable arbitrage.
+
+Keep `next_cursor`: an empty page can precede another page, and observations can
+change between requests. Reading the shortlist does not reserve capacity or
+authorize generation. Explicitly review and retain the chosen offer and scope;
+`reserve_job` rechecks them atomically. The SDK returns this evidence as server
+data, not an independently attested model identity or automatic selection policy.
+This remains a locally tested invited preview, not an advertised public service.
+
+## Hire, deliver and read the actual outcome
+
+After qualification, a supplier declares an expiring offer. Its human owner
+declares capacity, and the operator separately completes permission admission.
+The buyer and worker then use their own scoped credentials:
+
+```python
+buyer = SupplierClient(base_url=approved_api, token_file=private_buyer_token_file)
+# Persist job_id, deadline and creation intent before this mutation.
+job = buyer.request("create_job", job_id=job_id, deadline=deadline)
+page = buyer.request("job_offers", job_id=job_id, after=None, limit=20)
+# Review the offer and save its ID plus the exact scope before approving.
+buyer.request("reserve_job", job_id=job_id, offer_id=chosen_offer_id,
+              scope_sha256=job["scope_sha256"])
+claim = worker.request("claim_job", job_id=job_id)
+# claim['provider_calls_authorized'] is False; no automatic provider dispatch.
+# Save the exact answer and delivery intent before submission.
+delivery = worker.request("deliver_job", job_id=job_id, source=prepared_source)
+
+result = buyer.request("job_output", job_id=job_id)
+output_data = artifact_bytes(result)  # bounded bytes; never compiled or executed
+accepted = result["outcome"]["job_accepted"]
+```
+
+HTTP success is not job acceptance. A rejected answer is still retrievable for
+review. Code can pass its checker after revocation/cancellation and still fail
+job acceptance: use `job_accepted`, not just `accepted`. The SDK checks response
+IDs, disabled settlement and artifact digest/encoding. These consistency checks
+are not independent attestation of the server's result or proof of a purchase.
+
+## Lost responses and restart recovery
+
+Durably retain IDs, request contents, bindings and submission intent **before**
+mutating calls. The SDK is not a durable orchestrator. A timeout, connection loss,
+503, invalid response or process interruption can occur after work commits.
+
+Read the known challenge (`read_challenge`), buyer job (`read_job`) or worker's
+assigned page (`assigned_jobs`). Preserve pending/unknown outcomes for operator
+reconciliation. Do not generate replacement IDs, create another job, reclaim
+work or resend an answer automatically. After a process restart, reconstruct the
+client for these reads, using your retained IDs; a new client is not new authority.
+
+Within one instance, `submit_answer`, `claim_job` and `deliver_job` are fenced by
+their operation and resource ID before network activity, including concurrent
+calls. A second call is refused even after an invalid or lost reply. This is only
+a convenience guard: durable single-use enforcement remains server-owned.
+The guard holds at most 1,024 submission keys. Other explicit mutations are not
+locally fenced and still require careful caller reconciliation.
+
+`timeout` defaults to 30 seconds, bounded to 0.1–60. The transport shares the house
+client's normal TLS verification, no-redirect/no-proxy policy, strict bounded JSON
+and absolute response timer. DNS uses the system resolver without a hard process
+deadline. Credentials are re-read from an owner-only regular 0400/0600 token file
+per request; symlinks/hardlinks and non-account token formats are rejected. Keep
+credentials outside this repository. Errors are fixed codes, never raw server text.
+
+Local SDK tests use synthetic HTTP. The private server integration suite connects
+this client to actual account/qualification/job records and the isolated checker;
+it does not establish public reachability, a separate-machine customer journey,
+independent supplier participation, a new model result or live payment support.
