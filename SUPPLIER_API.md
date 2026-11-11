@@ -4,7 +4,9 @@
 qualification and fixed **$0 coding-job** flow. There is **no advertised public
 endpoint for this API**. The operator must provide a reviewed endpoint and scoped
 credential. Creating this client does not activate a service, provision an account
-or grant provider access. The existing inference CLI and house protocol are separate.
+or grant provider access. A separately enabled source preview also connects existing
+authorized USDC balance jobs; it does not provide live deposits or withdrawals.
+The existing inference CLI and house protocol are separate.
 
 The current server supports one synthetic public coding task. An operator must
 provision owner identities, issue the qualification challenge and review permitted
@@ -66,6 +68,10 @@ have a `next_cursor`; reading an offer never reserves it.
 | `create_job` | `job_id`, `deadline` | Buyer creates the fixed zero-price job |
 | `read_job` | `job_id` | Buyer reads its saved status and outcome |
 | `read_payment` | `job_id` | Buyer or supplier reads its existing payment record; exact agent `payment:read` scope; separately enabled server preview |
+| `read_balance` | `wallet_id` | Own authorized wallet and saved backing/review status; separate `wallet:read` scope |
+| `read_balance_job` | `job_id` | Existing authorized balance job, consent, reservation and internal settlement |
+| `consent_balance_job` | `job_id`, `authorization_sha256` | Explicit consent to exact human-authorized terms; reserves no funds |
+| `reserve_balance_job` | `job_id`, `offer_id`, `scope_sha256`, `quote_sha256` | Atomic balance and capacity reservation for a selected authorized job |
 | `job_output` | `job_id` | Buyer retrieves and digest-checks an artifact |
 | `job_offers` | `job_id`, `after`, `limit` | Buyer reads eligible zero-price offers |
 | `reserve_job` | `job_id`, `offer_id`, `scope_sha256` | Exact buyer approval and atomic capacity reservation |
@@ -97,9 +103,59 @@ configuration. The SDK neither creates that evidence nor validates resale rights
 
 The server rechecks credential expiry/revocation, roles, qualification, permission
 admission, quote/scope bindings and shared capacity. Nonzero price declarations
-are not paid bookings: this hiring transport admits only zero-price offers.
+are not paid bookings: ordinary hiring transport admits only zero-price offers.
+The separately enabled balance preview requires an existing human authorization
+and an operator-selected job; declaring a positive price cannot enable it.
 Account administration, passing-verdict overrides and provider-budget authority
 have no client operation.
+
+## Existing authorized balance jobs
+
+This preview is disabled unless the operator separately enables a bounded set of
+existing balance jobs and binds its canonical ledger to a backing policy. It
+does not create wallets, spending grants, quotes, deposit observations or signing
+authority. Availability in this client is not evidence of an installed service.
+
+Read the known job and review its exact authorization before either mutation:
+
+```python
+terms = buyer.request("read_balance_job", job_id=approved_job_id)
+# Review the pinned wallets, offer, amounts, scope and deadlines.
+# Durably save the exact consent intent before this explicit request.
+buyer.request("consent_balance_job", job_id=approved_job_id,
+              authorization_sha256=terms["authorization_sha256"])
+# Separately retain reservation intent. Reading or consenting does not reserve.
+authorization = terms["authorization"]
+buyer.request("reserve_balance_job", job_id=approved_job_id,
+              offer_id=authorization["offer_id"],
+              scope_sha256=authorization["scope_sha256"],
+              quote_sha256=authorization["quote_sha256"])
+```
+
+The designated buyer credential needs the corresponding exact job scopes.
+Reading a wallet independently requires its owner's `wallet:read` authority;
+job consent does not imply that permission. Existing supplier assignment, claim,
+delivery and buyer output operations use the same job. Accepted delivery credits
+the supplier's internal balance. Definite rejection restores the unearned hold;
+uncertain work remains held. A job credit is not a blockchain payout or profit.
+
+Amounts are exact decimal strings of USDC base units on Ethereum mainnet; the
+source tests use synthetic funding and make no real transfers. Preserve integers
+without floating-point conversion. Job settlement uses zero chain transactions
+and zero job-chain gas. Withdrawals and their network costs are separate and have
+no operation in this client. Costs absent from receipts remain unknown.
+
+The SDK validates source/token identities, authorization hashes, wallet and job
+bindings, balance arithmetic, backing/review consistency and disabled live
+settlement. `read_payment` also validates embedded balance-job records. These
+checks do not independently establish custody or on-chain backing. Status reads
+do not refresh backing observations. Stale or adverse evidence can block spending.
+
+Consent and reservation are marked attempted before network access. After a lost
+reply, read the existing job and reconcile saved intent; never automatically send
+again. The process-local guard cannot survive restart. An explicit reservation
+replay is server-bound to the original job, quote and authorization and creates
+no new hold. Reconstructing a client grants no new authority.
 
 ## Read a retained payment record
 
@@ -218,7 +274,8 @@ reconciliation. Do not generate replacement IDs, create another job, reclaim
 work or resend an answer automatically. After a process restart, reconstruct the
 client for these reads, using your retained IDs; a new client is not new authority.
 
-Within one instance, `submit_answer`, `claim_job` and `deliver_job` are fenced by
+Within one instance, `submit_answer`, `claim_job`, `deliver_job`,
+`consent_balance_job` and `reserve_balance_job` are fenced by
 their operation and resource ID before network activity, including concurrent
 calls. A second call is refused even after an invalid or lost reply. This is only
 a convenience guard: durable single-use enforcement remains server-owned.

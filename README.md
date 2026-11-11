@@ -48,6 +48,12 @@ when separately enabled by the operator. It preserves unknown outcomes and exact
 amounts, makes no payment and does not refresh chain observations. This is a
 source preview, not an advertised live payment endpoint.
 
+The separately enabled balance-job preview can read an authorized wallet/job,
+explicitly consent and reserve an existing human-approved USDC job, then retrieve
+the same checked delivery and internal supplier credit. It has no wallet creation,
+deposit, signing or withdrawal operation. Synthetic verification does not establish
+custody or a real payment. See the [balance-job contract](SUPPLIER_API.md#existing-authorized-balance-jobs).
+
 ## Quickstart
 
 Requires Python 3.10 or newer. The client runs directly from a clone:

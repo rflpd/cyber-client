@@ -252,4 +252,54 @@ class SupplierTests(unittest.TestCase):
         self.assertEqual(self.requests,[])
 
 
+    def test_balance_reads_bind_wallet_asset_and_exact_integer_spendability(self):
+        record={'schema':'cyber-account-balances/1','wallet_id':'wallet',
+            'source':{'schema':'cyber-account-balance-source/1','source_id':'f'*64},
+            'token':{'schema':'cyber-ethereum-token/1','chain_id':1,'symbol':'USDC',
+                'contract':'0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48','decimals':6},
+            'balances_units':{'available':'9007199254740993','job_reserved':'0','withdrawal_reserved':'0'},
+            'spendable_units':'9007199254740993','review_required':False,'internal_accounting':True,
+            'custody_verified':False,'live_settlement':'disabled','automatic_retry':False,
+            'backing':{'status':'covered','held':False,'custody_verified':False,'result_sha256':'f'*64}}
+        self.add(record)
+        self.assertEqual(self.client.request('read_balance',wallet_id='wallet'),record)
+        for change in ({'wallet_id':'other'},{'spendable_units':9007199254740993},
+                       {'review_required':True},{'custody_verified':True},{'live_settlement':'enabled'}):
+            self.add(record|change)
+            with self.assertRaisesRegex(CyberError,'response_binding_mismatch'):
+                self.client.request('read_balance',wallet_id='wallet')
+
+    def test_balance_consent_and_reserve_each_require_explicit_single_attempt(self):
+        calls=[('consent_balance_job',{'job_id':'j','authorization_sha256':'a'*64},
+                {'job_id':'j','authorization_sha256':'a'*64,'permission_reserved_again':False,
+                 'funds_reserved':False,'settlement':'disabled','replayed':False}),
+               ('reserve_balance_job',{'job_id':'j','offer_id':'o','scope_sha256':'b'*64,'quote_sha256':'c'*64},
+                {'job_id':'j','quote_sha256':'c'*64,'funding_route':'reusable_account_balance',
+                 'reserved':True,'new_execution_authority':False,'settlement':'disabled',
+                 'replayed':False,'authorization_sha256':'a'*64})]
+        for operation,fields,record in calls:
+            self.add(record);self.assertEqual(self.client.request(operation,**fields),record)
+            count=len(self.requests)
+            with self.assertRaisesRegex(CyberError,'review_required_read_status'):self.client.request(operation,**fields)
+            self.assertEqual(len(self.requests),count)
+
+    def test_balance_lost_reply_consumes_attempt_and_does_not_replay(self):
+        self.responses.append((None,{},{}))
+        fields={'job_id':'j','offer_id':'o','scope_sha256':'b'*64,'quote_sha256':'c'*64}
+        with self.assertRaises(CyberError):self.client.request('reserve_balance_job',**fields)
+        with self.assertRaisesRegex(CyberError,'review_required_read_status'):self.client.request('reserve_balance_job',**fields)
+        self.assertEqual(len(self.requests),1)
+
+    def test_balance_mutations_reject_response_hash_or_authority_changes(self):
+        for index,change in enumerate(({'quote_sha256':'d'*64},{'new_execution_authority':True},
+                                       {'funding_route':'onchain'},{'settlement':'enabled'},{'reserved':False})):
+            job='j'+str(index)
+            record={'job_id':job,'quote_sha256':'c'*64,'funding_route':'reusable_account_balance',
+                'reserved':True,'new_execution_authority':False,'settlement':'disabled',
+                'replayed':False,'authorization_sha256':'a'*64}
+            self.add(record|change)
+            with self.assertRaisesRegex(CyberError,'response_binding_mismatch'):
+                self.client.request('reserve_balance_job',job_id=job,offer_id='o',scope_sha256='b'*64,quote_sha256='c'*64)
+
+
 if __name__ == '__main__': unittest.main()
